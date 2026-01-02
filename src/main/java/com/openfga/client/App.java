@@ -145,7 +145,8 @@ object: document:readme
                 createModelTab(),
                 createVisualizeTab(),
                 createTuplesTab(),
-                createCheckTab()
+                createCheckTab(),
+                createQueryTab()
         );
         root.setCenter(tabPane);
 
@@ -931,6 +932,324 @@ object: document:readme
         return tab;
     }
 
+    // ==================== Query Tab ====================
+
+    private static final String DEFAULT_LIST_OBJECTS_TEXT = """
+user: user:alice
+relation: viewer
+type: document
+""";
+
+    private static final String DEFAULT_LIST_USERS_TEXT = """
+object: document:readme
+relation: viewer
+usertype: user
+""";
+
+    private static final String DEFAULT_EXPAND_TEXT = """
+object: document:readme
+relation: viewer
+""";
+
+    private static final String DEFAULT_READ_TUPLES_TEXT = """
+user:
+relation:
+object:
+""";
+
+    private Tab createQueryTab() {
+        Tab tab = new Tab("Query");
+
+        VBox content = new VBox(15);
+        content.setPadding(new Insets(15));
+
+        Label titleLabel = new Label("Advanced Queries (Text Format - paste from AI)");
+        titleLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
+
+        // Results area (shared by all queries)
+        TextArea queryResultArea = new TextArea();
+        queryResultArea.setEditable(false);
+        queryResultArea.setPrefRowCount(12);
+        queryResultArea.setStyle("-fx-font-family: monospace; -fx-font-size: 11px;");
+        queryResultArea.setPromptText("Query results will appear here...");
+
+        // 1. List Objects Section
+        TitledPane listObjectsPane = new TitledPane();
+        listObjectsPane.setText("List Objects - \"What can this user access?\"");
+        listObjectsPane.setExpanded(true);
+
+        VBox loContent = new VBox(10);
+        loContent.setPadding(new Insets(10));
+
+        Label loHint = new Label("Format: user: ... | relation: ... | type: ... | context: {...} (optional)");
+        loHint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+
+        TextArea loTextArea = new TextArea(DEFAULT_LIST_OBJECTS_TEXT);
+        loTextArea.setPrefRowCount(5);
+        loTextArea.setStyle("-fx-font-family: monospace;");
+
+        Button loBtn = new Button("List Objects");
+        loBtn.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white;");
+        loBtn.setOnAction(e -> {
+            Map<String, String> parsed = parseTextFormat(loTextArea.getText());
+            performListObjects(
+                    parsed.getOrDefault("user", ""),
+                    parsed.getOrDefault("relation", ""),
+                    parsed.getOrDefault("type", ""),
+                    parsed.getOrDefault("context", ""),
+                    queryResultArea);
+        });
+
+        loContent.getChildren().addAll(loHint, loTextArea, loBtn);
+        listObjectsPane.setContent(loContent);
+
+        // 2. List Users Section
+        TitledPane listUsersPane = new TitledPane();
+        listUsersPane.setText("List Users - \"Who can access this object?\"");
+        listUsersPane.setExpanded(false);
+
+        VBox luContent = new VBox(10);
+        luContent.setPadding(new Insets(10));
+
+        Label luHint = new Label("Format: object: ... | relation: ... | usertype: ... | context: {...} (optional)");
+        luHint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+
+        TextArea luTextArea = new TextArea(DEFAULT_LIST_USERS_TEXT);
+        luTextArea.setPrefRowCount(5);
+        luTextArea.setStyle("-fx-font-family: monospace;");
+
+        Button luBtn = new Button("List Users");
+        luBtn.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white;");
+        luBtn.setOnAction(e -> {
+            Map<String, String> parsed = parseTextFormat(luTextArea.getText());
+            performListUsers(
+                    parsed.getOrDefault("object", ""),
+                    parsed.getOrDefault("relation", ""),
+                    parsed.getOrDefault("usertype", ""),
+                    parsed.getOrDefault("context", ""),
+                    queryResultArea);
+        });
+
+        luContent.getChildren().addAll(luHint, luTextArea, luBtn);
+        listUsersPane.setContent(luContent);
+
+        // 3. Expand Section
+        TitledPane expandPane = new TitledPane();
+        expandPane.setText("Expand - \"How is this permission computed?\"");
+        expandPane.setExpanded(false);
+
+        VBox exContent = new VBox(10);
+        exContent.setPadding(new Insets(10));
+
+        Label exHint = new Label("Format: object: ... | relation: ...");
+        exHint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+
+        TextArea exTextArea = new TextArea(DEFAULT_EXPAND_TEXT);
+        exTextArea.setPrefRowCount(4);
+        exTextArea.setStyle("-fx-font-family: monospace;");
+
+        Button exBtn = new Button("Expand");
+        exBtn.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white;");
+        exBtn.setOnAction(e -> {
+            Map<String, String> parsed = parseTextFormat(exTextArea.getText());
+            performExpand(
+                    parsed.getOrDefault("object", ""),
+                    parsed.getOrDefault("relation", ""),
+                    queryResultArea);
+        });
+
+        exContent.getChildren().addAll(exHint, exTextArea, exBtn);
+        expandPane.setContent(exContent);
+
+        // 4. Read Tuples Section
+        TitledPane readTuplesPane = new TitledPane();
+        readTuplesPane.setText("Read Tuples - \"What tuples exist?\" (Debug)");
+        readTuplesPane.setExpanded(false);
+
+        VBox rtContent = new VBox(10);
+        rtContent.setPadding(new Insets(10));
+
+        Label rtHint = new Label("Format: user: ... | relation: ... | object: ... (all optional filters)");
+        rtHint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+
+        TextArea rtTextArea = new TextArea(DEFAULT_READ_TUPLES_TEXT);
+        rtTextArea.setPrefRowCount(4);
+        rtTextArea.setStyle("-fx-font-family: monospace;");
+
+        Button rtBtn = new Button("Read Tuples");
+        rtBtn.setStyle("-fx-background-color: #FF5722; -fx-text-fill: white;");
+        rtBtn.setOnAction(e -> {
+            Map<String, String> parsed = parseTextFormat(rtTextArea.getText());
+            performReadTuples(
+                    parsed.getOrDefault("user", ""),
+                    parsed.getOrDefault("relation", ""),
+                    parsed.getOrDefault("object", ""),
+                    queryResultArea);
+        });
+
+        rtContent.getChildren().addAll(rtHint, rtTextArea, rtBtn);
+        readTuplesPane.setContent(rtContent);
+
+        // Results label
+        Label resultsLabel = new Label("Results:");
+        resultsLabel.setStyle("-fx-font-weight: bold;");
+
+        content.getChildren().addAll(
+                titleLabel,
+                listObjectsPane,
+                listUsersPane,
+                expandPane,
+                readTuplesPane,
+                resultsLabel,
+                queryResultArea
+        );
+
+        tab.setContent(new ScrollPane(content));
+        return tab;
+    }
+
+    private void performListObjects(String user, String relation, String type, String context, TextArea resultArea) {
+        StoreInfo selected = storeComboBox.getValue();
+        if (selected == null) {
+            appendOutput("ERROR: No store selected");
+            return;
+        }
+
+        if (user.isBlank() || relation.isBlank() || type.isBlank()) {
+            appendOutput("ERROR: User, relation, and type are required");
+            return;
+        }
+
+        updateServiceConfig();
+        appendOutput("Listing objects: " + user + " -> " + relation + " -> " + type + ":*");
+
+        runAsync(() -> {
+            long startTime = System.currentTimeMillis();
+            var objects = fgaService.listObjects(selected.getId(), user, relation, type, context);
+            long duration = System.currentTimeMillis() - startTime;
+            Platform.runLater(() -> {
+                StringBuilder sb = new StringBuilder();
+                sb.append("=== List Objects ===\n");
+                sb.append("User: ").append(user).append("\n");
+                sb.append("Relation: ").append(relation).append("\n");
+                sb.append("Type: ").append(type).append("\n");
+                if (!context.isBlank()) sb.append("Context: ").append(context).append("\n");
+                sb.append("---\n");
+                sb.append("Found ").append(objects.size()).append(" object(s) in ").append(duration).append(" ms\n\n");
+                for (String obj : objects) {
+                    sb.append("  - ").append(obj).append("\n");
+                }
+                resultArea.setText(sb.toString());
+                appendOutput("Found " + objects.size() + " object(s) in " + duration + " ms");
+            });
+            return null;
+        });
+    }
+
+    private void performListUsers(String object, String relation, String userType, String context, TextArea resultArea) {
+        StoreInfo selected = storeComboBox.getValue();
+        if (selected == null) {
+            appendOutput("ERROR: No store selected");
+            return;
+        }
+
+        if (object.isBlank() || relation.isBlank() || userType.isBlank()) {
+            appendOutput("ERROR: Object, relation, and user type are required");
+            return;
+        }
+
+        // Parse object into type and id
+        String[] parts = object.split(":", 2);
+        if (parts.length != 2) {
+            appendOutput("ERROR: Object must be in format type:id");
+            return;
+        }
+
+        updateServiceConfig();
+        appendOutput("Listing users: " + userType + ":* -> " + relation + " -> " + object);
+
+        runAsync(() -> {
+            long startTime = System.currentTimeMillis();
+            var response = fgaService.listUsers(selected.getId(), relation, parts[0], parts[1], userType, context);
+            long duration = System.currentTimeMillis() - startTime;
+            Platform.runLater(() -> {
+                StringBuilder sb = new StringBuilder();
+                sb.append("=== List Users === (").append(duration).append(" ms)\n");
+                sb.append("Object: ").append(object).append("\n");
+                sb.append("Relation: ").append(relation).append("\n");
+                sb.append("User Type: ").append(userType).append("\n");
+                if (!context.isBlank()) sb.append("Context: ").append(context).append("\n");
+                sb.append("---\n");
+                sb.append(prettyPrintJson(response.toString()));
+                resultArea.setText(sb.toString());
+                appendOutput("List users completed in " + duration + " ms");
+            });
+            return null;
+        });
+    }
+
+    private void performExpand(String object, String relation, TextArea resultArea) {
+        StoreInfo selected = storeComboBox.getValue();
+        if (selected == null) {
+            appendOutput("ERROR: No store selected");
+            return;
+        }
+
+        if (object.isBlank() || relation.isBlank()) {
+            appendOutput("ERROR: Object and relation are required");
+            return;
+        }
+
+        updateServiceConfig();
+        appendOutput("Expanding: " + relation + " on " + object);
+
+        runAsync(() -> {
+            long startTime = System.currentTimeMillis();
+            var response = fgaService.expand(selected.getId(), relation, object);
+            long duration = System.currentTimeMillis() - startTime;
+            Platform.runLater(() -> {
+                StringBuilder sb = new StringBuilder();
+                sb.append("=== Expand === (").append(duration).append(" ms)\n");
+                sb.append("Object: ").append(object).append("\n");
+                sb.append("Relation: ").append(relation).append("\n");
+                sb.append("---\n");
+                sb.append(prettyPrintJson(response.toString()));
+                resultArea.setText(sb.toString());
+                appendOutput("Expand completed in " + duration + " ms");
+            });
+            return null;
+        });
+    }
+
+    private void performReadTuples(String user, String relation, String object, TextArea resultArea) {
+        StoreInfo selected = storeComboBox.getValue();
+        if (selected == null) {
+            appendOutput("ERROR: No store selected");
+            return;
+        }
+
+        updateServiceConfig();
+        appendOutput("Reading tuples...");
+
+        runAsync(() -> {
+            long startTime = System.currentTimeMillis();
+            var response = fgaService.readTuples(selected.getId(), user, relation, object);
+            long duration = System.currentTimeMillis() - startTime;
+            Platform.runLater(() -> {
+                StringBuilder sb = new StringBuilder();
+                sb.append("=== Read Tuples === (").append(duration).append(" ms)\n");
+                if (!user.isBlank()) sb.append("Filter User: ").append(user).append("\n");
+                if (!relation.isBlank()) sb.append("Filter Relation: ").append(relation).append("\n");
+                if (!object.isBlank()) sb.append("Filter Object: ").append(object).append("\n");
+                sb.append("---\n");
+                sb.append(prettyPrintJson(response.toString()));
+                resultArea.setText(sb.toString());
+                appendOutput("Read tuples completed in " + duration + " ms");
+            });
+            return null;
+        });
+    }
+
     private VBox createOutputPanel() {
         VBox outputBox = new VBox(5);
         outputBox.setPadding(new Insets(10, 0, 0, 0));
@@ -979,7 +1298,8 @@ object: document:readme
                 // Check if it's a known key
                 if (potentialKey.equals("user") || potentialKey.equals("relation") ||
                     potentialKey.equals("object") || potentialKey.equals("condition") ||
-                    potentialKey.equals("context")) {
+                    potentialKey.equals("context") || potentialKey.equals("type") ||
+                    potentialKey.equals("usertype")) {
 
                     // Save previous key-value if exists
                     if (currentKey != null && currentValue != null) {
@@ -1131,16 +1451,18 @@ object: document:readme
         appendOutput("Checking: " + user + " -> " + relation + " -> " + object);
 
         runAsync(() -> {
+            long startTime = System.currentTimeMillis();
             boolean allowed = fgaService.check(selected.getId(), user, relation, object, context);
+            long duration = System.currentTimeMillis() - startTime;
             Platform.runLater(() -> {
                 if (allowed) {
-                    checkResultLabel.setText("ALLOWED");
+                    checkResultLabel.setText("ALLOWED (" + duration + " ms)");
                     checkResultLabel.setStyle("-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: green;");
                 } else {
-                    checkResultLabel.setText("DENIED");
+                    checkResultLabel.setText("DENIED (" + duration + " ms)");
                     checkResultLabel.setStyle("-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: red;");
                 }
-                appendOutput("Check result: " + (allowed ? "ALLOWED" : "DENIED"));
+                appendOutput("Check result: " + (allowed ? "ALLOWED" : "DENIED") + " in " + duration + " ms");
             });
             return null;
         });

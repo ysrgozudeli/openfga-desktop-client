@@ -199,4 +199,118 @@ public class OpenFGAService {
         JsonNode response = sendRequest(request);
         return response.get("allowed").asBoolean();
     }
+
+    /**
+     * List all objects of a given type that a user has a specific relation with.
+     * Example: "What documents can user:alice view?"
+     */
+    public List<String> listObjects(String storeId, String user, String relation, String type,
+                                     String contextJson) throws Exception {
+        var body = objectMapper.createObjectNode()
+                .put("user", user)
+                .put("relation", relation)
+                .put("type", type);
+
+        // Add context if provided (needed for conditional tuples)
+        if (contextJson != null && !contextJson.isBlank()) {
+            JsonNode contextNode = objectMapper.readTree(contextJson);
+            body.set("context", contextNode);
+        }
+
+        HttpRequest request = createRequestBuilder("/stores/" + storeId + "/list-objects")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build();
+
+        JsonNode response = sendRequest(request);
+        List<String> objects = new ArrayList<>();
+
+        JsonNode objectsNode = response.get("objects");
+        if (objectsNode != null && objectsNode.isArray()) {
+            for (JsonNode obj : objectsNode) {
+                objects.add(obj.asText());
+            }
+        }
+
+        return objects;
+    }
+
+    /**
+     * List all users that have a specific relation with an object.
+     * Example: "Who can view document:readme?"
+     */
+    public JsonNode listUsers(String storeId, String relation, String objectType, String objectId,
+                              String userFilterType, String contextJson) throws Exception {
+        var objectNode = objectMapper.createObjectNode()
+                .put("type", objectType)
+                .put("id", objectId);
+
+        var userFilter = objectMapper.createObjectNode()
+                .put("type", userFilterType);
+
+        var body = objectMapper.createObjectNode();
+        body.set("object", objectNode);
+        body.put("relation", relation);
+        body.set("user_filters", objectMapper.createArrayNode().add(
+                objectMapper.createObjectNode().set("type", userFilter.get("type"))
+        ));
+
+        // Add context if provided (needed for conditional tuples)
+        if (contextJson != null && !contextJson.isBlank()) {
+            JsonNode contextNode = objectMapper.readTree(contextJson);
+            body.set("context", contextNode);
+        }
+
+        HttpRequest request = createRequestBuilder("/stores/" + storeId + "/list-users")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build();
+
+        return sendRequest(request);
+    }
+
+    /**
+     * Expand a relation to see how permissions are computed.
+     * Useful for debugging authorization decisions.
+     */
+    public JsonNode expand(String storeId, String relation, String object) throws Exception {
+        var tupleKey = objectMapper.createObjectNode()
+                .put("relation", relation)
+                .put("object", object);
+
+        var body = objectMapper.createObjectNode();
+        body.set("tuple_key", tupleKey);
+
+        HttpRequest request = createRequestBuilder("/stores/" + storeId + "/expand")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build();
+
+        return sendRequest(request);
+    }
+
+    /**
+     * Read tuples from the store. All parameters are optional filters.
+     */
+    public JsonNode readTuples(String storeId, String user, String relation, String object) throws Exception {
+        var tupleKey = objectMapper.createObjectNode();
+
+        if (user != null && !user.isBlank()) {
+            tupleKey.put("user", user);
+        }
+        if (relation != null && !relation.isBlank()) {
+            tupleKey.put("relation", relation);
+        }
+        if (object != null && !object.isBlank()) {
+            tupleKey.put("object", object);
+        }
+
+        var body = objectMapper.createObjectNode();
+        if (tupleKey.size() > 0) {
+            body.set("tuple_key", tupleKey);
+        }
+
+        HttpRequest request = createRequestBuilder("/stores/" + storeId + "/read")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .build();
+
+        return sendRequest(request);
+    }
 }
