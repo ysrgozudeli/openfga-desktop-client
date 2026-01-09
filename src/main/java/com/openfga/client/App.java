@@ -68,6 +68,13 @@ public class App extends Application {
     // Visualization
     private Canvas graphCanvas;
     private ScrollPane graphScrollPane;
+    private double nodeScale = 1.0;
+    private int nodeWidth = 160;
+    private List<TypeNode> currentTypes = new ArrayList<>();
+    private List<ConditionNode> currentConditions = new ArrayList<>();
+    private TypeNode draggedType = null;
+    private ConditionNode draggedCondition = null;
+    private double dragOffsetX, dragOffsetY;
 
     private OpenFGAService fgaService;
     private DslTransformService dslService;
@@ -112,6 +119,10 @@ condition time_valid(current_time: timestamp, expiry_time: timestamp) {
 user: user:alice
 relation: editor
 object: document:readme
+---
+user: user:bob
+relation: viewer
+object: document:readme
 """;
 
     private static final String DEFAULT_CHECK_TEXT = """
@@ -148,10 +159,16 @@ object: document:readme
                 createCheckTab(),
                 createQueryTab()
         );
-        root.setCenter(tabPane);
 
-        // Bottom: Output Area
-        root.setBottom(createOutputPanel());
+        // Bottom: Output Area in adjustable SplitPane
+        VBox outputPanel = createOutputPanel();
+
+        SplitPane mainSplitPane = new SplitPane();
+        mainSplitPane.setOrientation(javafx.geometry.Orientation.VERTICAL);
+        mainSplitPane.getItems().addAll(tabPane, outputPanel);
+        mainSplitPane.setDividerPositions(0.85); // 85% tabs, 15% logs
+
+        root.setCenter(mainSplitPane);
 
         Scene scene = new Scene(root, 1000, 800);
         primaryStage.setTitle("OpenFGA Desktop Client");
@@ -399,28 +416,118 @@ object: document:readme
         Label titleLabel = new Label("Model Graph Visualization");
         titleLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
 
-        HBox buttonBox = new HBox(10);
+        HBox controlBox = new HBox(10);
+        controlBox.setAlignment(Pos.CENTER_LEFT);
+
         Button refreshBtn = new Button("Refresh Graph");
         refreshBtn.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white;");
         refreshBtn.setOnAction(e -> renderGraph());
 
-        Label hint = new Label("(Parses DSL from Model tab)");
-        hint.setStyle("-fx-text-fill: #666;");
-        buttonBox.getChildren().addAll(refreshBtn, hint);
+        // Node width slider
+        Label widthLabel = new Label("Width:");
+        Slider widthSlider = new Slider(120, 300, 160);
+        widthSlider.setPrefWidth(100);
+        widthSlider.setShowTickLabels(true);
+        widthSlider.setMajorTickUnit(60);
+        widthSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
+            nodeWidth = newVal.intValue();
+            redrawGraph();
+        });
+
+        // Node scale slider
+        Label sizeLabel = new Label("Scale:");
+        Slider sizeSlider = new Slider(0.5, 2.0, 1.0);
+        sizeSlider.setPrefWidth(100);
+        sizeSlider.setShowTickLabels(true);
+        sizeSlider.setMajorTickUnit(0.5);
+        sizeSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
+            nodeScale = newVal.doubleValue();
+            redrawGraph();
+        });
+
+        Button resetBtn = new Button("Reset");
+        resetBtn.setOnAction(e -> {
+            widthSlider.setValue(160);
+            sizeSlider.setValue(1.0);
+            renderGraph();
+        });
+
+        Label hint = new Label("(Drag to move)");
+        hint.setStyle("-fx-text-fill: #666; -fx-font-size: 11px;");
+
+        controlBox.getChildren().addAll(refreshBtn, widthLabel, widthSlider, sizeLabel, sizeSlider, resetBtn, hint);
 
         // Canvas inside ScrollPane
-        graphCanvas = new Canvas(900, 600);
+        graphCanvas = new Canvas(1200, 800);
         graphScrollPane = new ScrollPane(graphCanvas);
-        graphScrollPane.setPannable(true);
+        graphScrollPane.setPannable(false); // Disable panning to allow drag
         graphScrollPane.setStyle("-fx-background-color: white;");
-        VBox.setVgrow(graphScrollPane, Priority.ALWAYS);
+
+        // Mouse events for dragging
+        graphCanvas.setOnMousePressed(e -> {
+            draggedType = findTypeAt(e.getX(), e.getY());
+            if (draggedType != null) {
+                dragOffsetX = e.getX() - draggedType.x;
+                dragOffsetY = e.getY() - draggedType.y;
+            } else {
+                draggedCondition = findConditionAt(e.getX(), e.getY());
+                if (draggedCondition != null) {
+                    dragOffsetX = e.getX() - draggedCondition.x;
+                    dragOffsetY = e.getY() - draggedCondition.y;
+                }
+            }
+        });
+
+        graphCanvas.setOnMouseDragged(e -> {
+            if (draggedType != null) {
+                draggedType.x = Math.max(0, e.getX() - dragOffsetX);
+                draggedType.y = Math.max(0, e.getY() - dragOffsetY);
+                redrawGraph();
+            } else if (draggedCondition != null) {
+                draggedCondition.x = Math.max(0, e.getX() - dragOffsetX);
+                draggedCondition.y = Math.max(0, e.getY() - dragOffsetY);
+                redrawGraph();
+            }
+        });
+
+        graphCanvas.setOnMouseReleased(e -> {
+            draggedType = null;
+            draggedCondition = null;
+        });
 
         // Legend
         HBox legend = createLegend();
 
-        content.getChildren().addAll(titleLabel, buttonBox, graphScrollPane, legend);
+        VBox.setVgrow(graphScrollPane, Priority.ALWAYS);
+
+        content.getChildren().addAll(titleLabel, controlBox, graphScrollPane, legend);
         tab.setContent(content);
         return tab;
+    }
+
+    private TypeNode findTypeAt(double x, double y) {
+        int scaledWidth = (int) (nodeWidth * nodeScale);
+        int baseHeight = (int) (100 * nodeScale);
+        for (TypeNode type : currentTypes) {
+            int dynamicHeight = Math.max(baseHeight, (int) ((40 + type.relations.size() * 20) * nodeScale));
+            if (x >= type.x && x <= type.x + scaledWidth &&
+                y >= type.y && y <= type.y + dynamicHeight) {
+                return type;
+            }
+        }
+        return null;
+    }
+
+    private ConditionNode findConditionAt(double x, double y) {
+        int scaledWidth = (int) (nodeWidth * nodeScale);
+        int scaledHeight = (int) (90 * nodeScale);
+        for (ConditionNode cond : currentConditions) {
+            if (x >= cond.x && x <= cond.x + scaledWidth &&
+                y >= cond.y && y <= cond.y + scaledHeight) {
+                return cond;
+            }
+        }
+        return null;
     }
 
     private HBox createLegend() {
@@ -450,71 +557,93 @@ object: document:readme
 
     private void renderGraph() {
         String dsl = dslTextArea.getText();
-        GraphicsContext gc = graphCanvas.getGraphicsContext2D();
 
-        // Clear canvas
-        gc.setFill(Color.WHITE);
-        gc.fillRect(0, 0, graphCanvas.getWidth(), graphCanvas.getHeight());
+        // Parse DSL and store
+        currentTypes = parseDslForVisualization(dsl);
+        currentConditions = parseConditionsForVisualization(dsl);
 
-        // Parse DSL
-        List<TypeNode> types = parseDslForVisualization(dsl);
-        List<ConditionNode> conditions = parseConditionsForVisualization(dsl);
-
-        if (types.isEmpty()) {
+        if (currentTypes.isEmpty()) {
+            GraphicsContext gc = graphCanvas.getGraphicsContext2D();
+            gc.setFill(Color.WHITE);
+            gc.fillRect(0, 0, graphCanvas.getWidth(), graphCanvas.getHeight());
             gc.setFill(Color.GRAY);
             gc.setFont(Font.font("System", 14));
             gc.fillText("No types found. Enter a DSL model and click 'Refresh Graph'.", 50, 50);
             return;
         }
 
-        // Calculate layout
-        int totalNodes = types.size() + conditions.size();
+        // Calculate initial layout
+        int totalNodes = currentTypes.size() + currentConditions.size();
         int cols = (int) Math.ceil(Math.sqrt(totalNodes));
-        int nodeWidth = 160;
-        int nodeHeight = 100;
         int spacingX = 200;
         int spacingY = 180;
         int startX = 50;
         int startY = 50;
 
         // Position types
-        Map<String, double[]> positions = new HashMap<>();
         int index = 0;
-        for (TypeNode type : types) {
+        for (TypeNode type : currentTypes) {
             int col = index % cols;
             int row = index / cols;
             type.x = startX + col * spacingX;
             type.y = startY + row * spacingY;
-            positions.put(type.name, new double[]{type.x + nodeWidth / 2.0, type.y + nodeHeight / 2.0});
             index++;
         }
 
         // Position conditions
-        for (ConditionNode cond : conditions) {
+        for (ConditionNode cond : currentConditions) {
             int col = index % cols;
             int row = index / cols;
             cond.x = startX + col * spacingX;
             cond.y = startY + row * spacingY;
-            positions.put("condition:" + cond.name, new double[]{cond.x + nodeWidth / 2.0, cond.y + 40});
             index++;
         }
 
-        // Resize canvas if needed
-        double requiredWidth = (cols + 1) * spacingX;
-        double requiredHeight = ((totalNodes / cols) + 2) * spacingY;
-        if (requiredWidth > graphCanvas.getWidth()) graphCanvas.setWidth(requiredWidth);
-        if (requiredHeight > graphCanvas.getHeight()) graphCanvas.setHeight(requiredHeight);
+        redrawGraph();
+        appendOutput("Graph rendered: " + currentTypes.size() + " types, " + currentConditions.size() + " conditions");
+    }
 
-        // Redraw background
+    private void redrawGraph() {
+        if (currentTypes.isEmpty() && currentConditions.isEmpty()) return;
+
+        GraphicsContext gc = graphCanvas.getGraphicsContext2D();
+        int scaledWidth = (int) (nodeWidth * nodeScale);
+        int nodeHeight = (int) (100 * nodeScale);
+
+        // Calculate required canvas size
+        double maxX = 0, maxY = 0;
+        for (TypeNode type : currentTypes) {
+            maxX = Math.max(maxX, type.x + scaledWidth + 50);
+            maxY = Math.max(maxY, type.y + nodeHeight + 50);
+        }
+        for (ConditionNode cond : currentConditions) {
+            maxX = Math.max(maxX, cond.x + scaledWidth + 50);
+            maxY = Math.max(maxY, cond.y + (int)(90 * nodeScale) + 50);
+        }
+
+        // Resize canvas if needed
+        if (maxX > graphCanvas.getWidth()) graphCanvas.setWidth(maxX);
+        if (maxY > graphCanvas.getHeight()) graphCanvas.setHeight(maxY);
+
+        // Clear canvas
         gc.setFill(Color.WHITE);
         gc.fillRect(0, 0, graphCanvas.getWidth(), graphCanvas.getHeight());
 
-        // Draw edges first (so they appear behind nodes)
-        gc.setLineWidth(1.5);
-        for (TypeNode type : types) {
+        // Build positions map for edges
+        Map<String, double[]> positions = new HashMap<>();
+        for (TypeNode type : currentTypes) {
+            int dynamicHeight = Math.max(nodeHeight, (int) ((40 + type.relations.size() * 20) * nodeScale));
+            positions.put(type.name, new double[]{type.x + scaledWidth / 2.0, type.y + dynamicHeight / 2.0});
+        }
+        for (ConditionNode cond : currentConditions) {
+            positions.put("condition:" + cond.name, new double[]{cond.x + scaledWidth / 2.0, cond.y + 45 * nodeScale});
+        }
+
+        // Draw edges first
+        gc.setLineWidth(1.5 * nodeScale);
+        for (TypeNode type : currentTypes) {
             double[] fromPos = positions.get(type.name);
             for (RelationInfo rel : type.relations) {
-                // Draw connections to referenced types
                 for (String ref : rel.references) {
                     String targetType = extractTypeName(ref);
                     if (positions.containsKey(targetType)) {
@@ -526,50 +655,49 @@ object: document:readme
         }
 
         // Draw type nodes
-        for (TypeNode type : types) {
-            drawTypeNode(gc, type, nodeWidth, nodeHeight);
+        for (TypeNode type : currentTypes) {
+            drawTypeNode(gc, type, scaledWidth, nodeHeight);
         }
 
         // Draw condition nodes
-        for (ConditionNode cond : conditions) {
-            drawConditionNode(gc, cond, nodeWidth);
+        for (ConditionNode cond : currentConditions) {
+            drawConditionNode(gc, cond, scaledWidth);
         }
-
-        appendOutput("Graph rendered: " + types.size() + " types, " + conditions.size() + " conditions");
     }
 
     private void drawTypeNode(GraphicsContext gc, TypeNode type, int width, int height) {
         // Calculate dynamic height based on relations
-        int dynamicHeight = Math.max(height, 40 + type.relations.size() * 20);
+        int dynamicHeight = (int) Math.max(height, (40 + type.relations.size() * 20) * nodeScale);
+        int headerHeight = (int) (32 * nodeScale);
+        int cornerRadius = (int) (12 * nodeScale);
 
         // Shadow
         gc.setFill(Color.rgb(0, 0, 0, 0.15));
-        gc.fillRoundRect(type.x + 4, type.y + 4, width, dynamicHeight, 12, 12);
+        gc.fillRoundRect(type.x + 4, type.y + 4, width, dynamicHeight, cornerRadius, cornerRadius);
 
         // Node background - light blue/white
         gc.setFill(Color.rgb(248, 250, 255));
-        gc.fillRoundRect(type.x, type.y, width, dynamicHeight, 12, 12);
+        gc.fillRoundRect(type.x, type.y, width, dynamicHeight, cornerRadius, cornerRadius);
 
         // Border
         gc.setStroke(Color.rgb(66, 133, 244));
-        gc.setLineWidth(2);
-        gc.strokeRoundRect(type.x, type.y, width, dynamicHeight, 12, 12);
+        gc.setLineWidth(2 * nodeScale);
+        gc.strokeRoundRect(type.x, type.y, width, dynamicHeight, cornerRadius, cornerRadius);
 
         // Header background
         gc.setFill(Color.rgb(66, 133, 244));
-        gc.fillRoundRect(type.x, type.y, width, 32, 12, 12);
-        gc.fillRect(type.x, type.y + 20, width, 12);
+        gc.fillRoundRect(type.x, type.y, width, headerHeight, cornerRadius, cornerRadius);
+        gc.fillRect(type.x, type.y + headerHeight * 0.6, width, headerHeight * 0.4);
 
         // Type name (white on blue header)
         gc.setFill(Color.WHITE);
-        gc.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
+        gc.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13 * nodeScale));
         gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText(type.name, type.x + width / 2.0, type.y + 21);
+        gc.fillText(type.name, type.x + width / 2.0, type.y + headerHeight * 0.65);
 
         // Relations - dark text on light background
-        gc.setFont(Font.font("Monospace", 11));
         gc.setTextAlign(TextAlignment.LEFT);
-        double y = type.y + 50;
+        double y = type.y + headerHeight + 18 * nodeScale;
         for (RelationInfo rel : type.relations) {
             // Relation name in bold color
             if (rel.isComputed) {
@@ -577,55 +705,59 @@ object: document:readme
             } else {
                 gc.setFill(Color.rgb(27, 94, 32)); // Dark green for direct
             }
-            gc.setFont(Font.font("Monospace", javafx.scene.text.FontWeight.BOLD, 11));
-            gc.fillText(rel.name, type.x + 10, y);
+            gc.setFont(Font.font("Monospace", javafx.scene.text.FontWeight.BOLD, 11 * nodeScale));
+            gc.fillText(rel.name, type.x + 10 * nodeScale, y);
 
             // Definition in gray
             gc.setFill(Color.rgb(80, 80, 80));
-            gc.setFont(Font.font("Monospace", 10));
-            String shortDef = truncate(rel.shortDef, 18);
-            gc.fillText(": " + shortDef, type.x + 10 + rel.name.length() * 7, y);
-            y += 18;
+            gc.setFont(Font.font("Monospace", 10 * nodeScale));
+            int availableChars = (int)((width - 20 * nodeScale - rel.name.length() * 7 * nodeScale) / (6 * nodeScale));
+            String shortDef = truncate(rel.shortDef, Math.max(5, availableChars));
+            gc.fillText(": " + shortDef, type.x + 10 * nodeScale + rel.name.length() * 7 * nodeScale, y);
+            y += 18 * nodeScale;
         }
     }
 
     private void drawConditionNode(GraphicsContext gc, ConditionNode cond, int width) {
-        int height = 90;
+        int height = (int) (90 * nodeScale);
+        int headerHeight = (int) (32 * nodeScale);
+        int cornerRadius = (int) (12 * nodeScale);
 
         // Shadow
         gc.setFill(Color.rgb(0, 0, 0, 0.15));
-        gc.fillRoundRect(cond.x + 4, cond.y + 4, width, height, 12, 12);
+        gc.fillRoundRect(cond.x + 4, cond.y + 4, width, height, cornerRadius, cornerRadius);
 
         // Node background - light pink/white
         gc.setFill(Color.rgb(255, 250, 250));
-        gc.fillRoundRect(cond.x, cond.y, width, height, 12, 12);
+        gc.fillRoundRect(cond.x, cond.y, width, height, cornerRadius, cornerRadius);
 
         // Border
         gc.setStroke(Color.rgb(183, 28, 28));
-        gc.setLineWidth(2);
-        gc.strokeRoundRect(cond.x, cond.y, width, height, 12, 12);
+        gc.setLineWidth(2 * nodeScale);
+        gc.strokeRoundRect(cond.x, cond.y, width, height, cornerRadius, cornerRadius);
 
         // Header background
         gc.setFill(Color.rgb(183, 28, 28));
-        gc.fillRoundRect(cond.x, cond.y, width, 32, 12, 12);
-        gc.fillRect(cond.x, cond.y + 20, width, 12);
+        gc.fillRoundRect(cond.x, cond.y, width, headerHeight, cornerRadius, cornerRadius);
+        gc.fillRect(cond.x, cond.y + headerHeight * 0.6, width, headerHeight * 0.4);
 
         // Condition label and name (white on red header)
         gc.setFill(Color.WHITE);
-        gc.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 12));
+        gc.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 12 * nodeScale));
         gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText("condition: " + cond.name, cond.x + width / 2.0, cond.y + 21);
+        gc.fillText("condition: " + cond.name, cond.x + width / 2.0, cond.y + headerHeight * 0.65);
 
         // Parameters - dark text
         gc.setFill(Color.rgb(100, 100, 100));
-        gc.setFont(Font.font("Monospace", 10));
+        gc.setFont(Font.font("Monospace", 10 * nodeScale));
         gc.setTextAlign(TextAlignment.LEFT);
-        gc.fillText("(" + truncate(cond.params, 22) + ")", cond.x + 10, cond.y + 52);
+        int availableChars = (int)((width - 20 * nodeScale) / (6 * nodeScale));
+        gc.fillText("(" + truncate(cond.params, Math.max(5, availableChars - 2)) + ")", cond.x + 10 * nodeScale, cond.y + headerHeight + 20 * nodeScale);
 
         // Expression - darker
         gc.setFill(Color.rgb(50, 50, 50));
-        gc.setFont(Font.font("Monospace", javafx.scene.text.FontWeight.BOLD, 10));
-        gc.fillText(truncate(cond.expression, 24), cond.x + 10, cond.y + 72);
+        gc.setFont(Font.font("Monospace", javafx.scene.text.FontWeight.BOLD, 10 * nodeScale));
+        gc.fillText(truncate(cond.expression, Math.max(5, availableChars)), cond.x + 10 * nodeScale, cond.y + headerHeight + 40 * nodeScale);
     }
 
     private void drawArrow(GraphicsContext gc, double x1, double y1, double x2, double y2, String label, boolean isComputed) {
@@ -639,12 +771,12 @@ object: document:readme
             lineColor = Color.rgb(27, 94, 32, 0.8); // Dark green
         }
         gc.setStroke(lineColor);
-        gc.setLineWidth(2);
+        gc.setLineWidth(2 * nodeScale);
 
         // Draw curved line
         double midX = (x1 + x2) / 2;
         double midY = (y1 + y2) / 2;
-        double offset = 30;
+        double offset = 30 * nodeScale;
 
         gc.beginPath();
         gc.moveTo(x1, y1);
@@ -653,7 +785,7 @@ object: document:readme
 
         // Arrowhead
         double angle = Math.atan2(y2 - (midY - offset), x2 - (midX + offset));
-        double arrowLength = 12;
+        double arrowLength = 12 * nodeScale;
         gc.setFill(lineColor);
         gc.fillPolygon(
             new double[]{x2, x2 - arrowLength * Math.cos(angle - Math.PI / 6), x2 - arrowLength * Math.cos(angle + Math.PI / 6)},
@@ -772,29 +904,34 @@ object: document:readme
     private Tab createTuplesTab() {
         Tab tab = new Tab("Tuples");
 
-        VBox content = new VBox(15);
+        VBox content = new VBox(10);
         content.setPadding(new Insets(15));
 
         // Text Format Section (Default - expanded)
-        Label textLabel = new Label("Tuple (Text Format - paste from AI):");
+        Label textLabel = new Label("Tuples (Text Format - paste from AI):");
         textLabel.setStyle("-fx-font-weight: bold;");
 
-        Label formatHint = new Label("Format: user: ... | relation: ... | object: ... | condition: ... (optional) | context: {...} (optional)");
+        Label formatHint = new Label("Use '---' to separate multiple tuples  |  Lines starting with '#' are comments");
         formatHint.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
 
         tupleTextArea = new TextArea(DEFAULT_TUPLE_TEXT);
-        tupleTextArea.setPrefRowCount(6);
         tupleTextArea.setStyle("-fx-font-family: monospace;");
+        VBox.setVgrow(tupleTextArea, Priority.ALWAYS);
 
         // Buttons for text format
         HBox textButtonBox = new HBox(10);
-        Button writeFromTextBtn = new Button("Write Tuple");
+        Button writeFromTextBtn = new Button("Write Tuple(s)");
         writeFromTextBtn.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white;");
-        writeFromTextBtn.setOnAction(e -> writeTupleFromText());
-        Button deleteFromTextBtn = new Button("Delete Tuple");
+        writeFromTextBtn.setOnAction(e -> writeTuplesFromText());
+        Button deleteFromTextBtn = new Button("Delete Tuple(s)");
         deleteFromTextBtn.setStyle("-fx-background-color: #ff6b6b; -fx-text-fill: white;");
-        deleteFromTextBtn.setOnAction(e -> deleteTupleFromText());
+        deleteFromTextBtn.setOnAction(e -> deleteTuplesFromText());
         textButtonBox.getChildren().addAll(writeFromTextBtn, deleteFromTextBtn);
+
+        // Top section with text area
+        VBox topSection = new VBox(10);
+        topSection.getChildren().addAll(textLabel, formatHint, tupleTextArea, textButtonBox);
+        VBox.setVgrow(tupleTextArea, Priority.ALWAYS);
 
         // Fields Format Section (Collapsible - for rare cases)
         tupleFieldsPane = new TitledPane();
@@ -848,7 +985,15 @@ object: document:readme
         fieldsContent.getChildren().addAll(grid, fieldButtonBox);
         tupleFieldsPane.setContent(fieldsContent);
 
-        content.getChildren().addAll(textLabel, formatHint, tupleTextArea, textButtonBox, tupleFieldsPane);
+        // SplitPane for adjustable heights
+        SplitPane splitPane = new SplitPane();
+        splitPane.setOrientation(javafx.geometry.Orientation.VERTICAL);
+        splitPane.getItems().addAll(topSection, tupleFieldsPane);
+        splitPane.setDividerPositions(0.7);
+
+        content.getChildren().add(splitPane);
+        VBox.setVgrow(splitPane, Priority.ALWAYS);
+
         tab.setContent(content);
         return tab;
     }
@@ -1290,6 +1435,7 @@ object:
         for (String line : lines) {
             line = line.trim();
             if (line.isEmpty()) continue;
+            if (line.startsWith("#")) continue; // Skip comments
 
             // Check if this line starts a new key
             int colonIndex = line.indexOf(':');
@@ -1299,7 +1445,7 @@ object:
                 if (potentialKey.equals("user") || potentialKey.equals("relation") ||
                     potentialKey.equals("object") || potentialKey.equals("condition") ||
                     potentialKey.equals("context") || potentialKey.equals("type") ||
-                    potentialKey.equals("usertype")) {
+                    potentialKey.equals("usertype") || potentialKey.equals("name")) {
 
                     // Save previous key-value if exists
                     if (currentKey != null && currentValue != null) {
@@ -1328,24 +1474,65 @@ object:
 
     // ==================== Tuple Operations ====================
 
-    private void writeTupleFromText() {
-        Map<String, String> parsed = parseTextFormat(tupleTextArea.getText());
-        String user = parsed.get("user");
-        String relation = parsed.get("relation");
-        String object = parsed.get("object");
-        String condition = parsed.getOrDefault("condition", "");
-        String context = parsed.getOrDefault("context", "");
+    private void writeTuplesFromText() {
+        String text = tupleTextArea.getText();
+        String[] tupleBlocks = text.split("---");
 
-        writeTuple(user, relation, object, condition, context);
+        int count = 0;
+        for (String block : tupleBlocks) {
+            block = block.trim();
+            if (block.isEmpty()) continue;
+
+            Map<String, String> parsed = parseTextFormat(block);
+            String user = parsed.get("user");
+            String relation = parsed.get("relation");
+            String object = parsed.get("object");
+            String condition = parsed.getOrDefault("condition", "");
+            String context = parsed.getOrDefault("context", "");
+
+            // Support "name:" as condition name if "condition:" was empty
+            if (condition.isBlank() && parsed.containsKey("name")) {
+                condition = parsed.get("name");
+            }
+
+            if (user != null && !user.isBlank() && relation != null && !relation.isBlank() && object != null && !object.isBlank()) {
+                writeTuple(user, relation, object, condition, context);
+                count++;
+            }
+        }
+
+        if (count == 0) {
+            appendOutput("ERROR: No valid tuples found");
+        } else {
+            appendOutput("Processing " + count + " tuple(s)...");
+        }
     }
 
-    private void deleteTupleFromText() {
-        Map<String, String> parsed = parseTextFormat(tupleTextArea.getText());
-        String user = parsed.get("user");
-        String relation = parsed.get("relation");
-        String object = parsed.get("object");
+    private void deleteTuplesFromText() {
+        String text = tupleTextArea.getText();
+        String[] tupleBlocks = text.split("---");
 
-        deleteTuple(user, relation, object);
+        int count = 0;
+        for (String block : tupleBlocks) {
+            block = block.trim();
+            if (block.isEmpty()) continue;
+
+            Map<String, String> parsed = parseTextFormat(block);
+            String user = parsed.get("user");
+            String relation = parsed.get("relation");
+            String object = parsed.get("object");
+
+            if (user != null && !user.isBlank() && relation != null && !relation.isBlank() && object != null && !object.isBlank()) {
+                deleteTuple(user, relation, object);
+                count++;
+            }
+        }
+
+        if (count == 0) {
+            appendOutput("ERROR: No valid tuples found");
+        } else {
+            appendOutput("Deleting " + count + " tuple(s)...");
+        }
     }
 
     private void writeTupleFromFields() {
